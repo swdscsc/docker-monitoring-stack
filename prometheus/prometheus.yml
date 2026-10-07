@@ -1,0 +1,35 @@
+# Prometheus 主配置
+global:
+  scrape_interval: 15s      # 拉取间隔：15 秒一个数据点
+  evaluation_interval: 15s  # 告警规则判定间隔
+
+# 告警规则文件
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+# 告警发给 Alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# 要监控哪些目标
+scrape_configs:
+  # 1. 监控 Prometheus 自己（监控系统本身也要被监控）
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 2. 监控宿主机（通过 node-exporter）
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          instance: 'host-01'
+          env: 'dev'
+
+  # 3. 监控 cAdvisor（容器自身的资源占用），需要时打开
+  # - job_name: 'cadvisor'
+  #   static_configs:
+  #     - targets: ['cadvisor:8080']

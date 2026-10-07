@@ -1,0 +1,78 @@
+# ==============================================================================
+# 一键部署监控栈：Prometheus + Grafana + Node Exporter + Alertmanager
+#
+# 启动：docker compose up -d
+# 访问：Grafana  http://localhost:3000  (admin / admin123)
+#       Prometheus http://localhost:9090
+#       Alertmanager http://localhost:9093
+#
+# 结构说明：
+#   node-exporter  采集机器指标（CPU/内存/磁盘/网络），暴露 :9100/metrics
+#   prometheus     定时拉取并存储，按 alert_rules.yml 判定告警
+#   alertmanager   接收告警，做分组/抑制/静默后发出
+#   grafana        读取 Prometheus 数据画图，数据源已自动配置
+# ==============================================================================
+
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+    ports:
+      - "9100:9100"
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    user: "0"                       # 避免数据目录权限问题
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'   # 只留 15 天，控制磁盘占用
+    ports:
+      - "9090:9090"
+    depends_on:
+      - node-exporter
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # 自动配置数据源，省去手工点界面
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:

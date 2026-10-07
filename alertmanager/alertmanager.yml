@@ -1,0 +1,42 @@
+# Alertmanager 配置
+# 作用：对 Prometheus 发来的告警做「分组 / 抑制 / 静默」，再决定发给谁
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'instance']   # 同类告警合并成一条，避免告警轰炸
+  group_wait: 30s                        # 组内第一条告警先等 30s，看是否有同类一起发
+  group_interval: 5m                     # 同一组下次发送间隔
+  repeat_interval: 3h                    # 未恢复的告警多久重发一次（防轰炸）
+  receiver: 'default'
+
+  routes:
+    # critical 级别走单独通道，可以配电话/短信
+    - matchers:
+        - severity = "critical"
+      receiver: 'default'
+      repeat_interval: 1h
+
+receivers:
+  - name: 'default'
+    # 示例：企业微信机器人（把 webhook 地址换成自己的）
+    # wechat_configs:
+    #   - corp_id: 'xxxx'
+    #     api_secret: 'xxxx'
+    #     to_user: '@all'
+    #     agent_id: '1000002'
+    #
+    # 示例：钉钉机器人
+    # webhook_configs:
+    #   - url: 'https://oapi.dingtalk.com/robot/send?access_token=xxxx'
+    #
+    # 没有配置实际接收器时，告警会在 Alertmanager 界面可见，不会外发
+    webhook_configs: []
+
+# 抑制规则：机器宕机时，抑制该机器上的其他告警（避免一条宕机引发几十条告警）
+inhibit_rules:
+  - source_matchers:
+      - alertname = "NodeDown"
+    target_matchers:
+      - severity = "warning"
+    equal: ['instance']
