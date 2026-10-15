@@ -29,7 +29,8 @@ scrape_configs:
           instance: 'host-01'
           env: 'dev'
 
-  # 3. 监控 cAdvisor（容器自身的资源占用），需要时打开
+  # 3. 监控 cAdvisor（容器自身的资源占用）
+  #    通过 make cadvisor 启动 cAdvisor 后取消下面注释即可采集
   # - job_name: 'cadvisor'
   #   static_configs:
   #     - targets: ['cadvisor:8080']
