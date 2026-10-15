@@ -19,7 +19,7 @@ flowchart LR
     PROM -->|命中规则 持续 for| AM[Alertmanager :9093]
     AM -->|分组/抑制/静默| HOOK[Webhook / 钉钉 / 企微]
     PROM -->|查询| GRAF[Grafana :3000]
-    GRAF -->|自动配置数据源+看板| USER[浏览器看板]
+    GRAF -->|数据源已自动配好| USER[浏览器看板]
 ```
 
 **关键设计：Prometheus 是「拉」模型（pull），不是「推」。** 被监控端只需暴露一个
@@ -28,29 +28,29 @@ flowchart LR
 ## 快速开始
 
 ```bash
-make up          # 等价于 docker compose up -d
+docker compose up -d        # 启动
+docker compose ps           # 看状态
+docker compose logs -f prometheus
+docker compose down         # 停止（数据卷保留）
+docker compose down -v      # 连数据一起清掉
 ```
 
 | 服务 | 地址 | 说明 |
 | --- | --- | --- |
-| Grafana | http://localhost:3000 | 账号 `admin` / `admin123`，数据源与看板已自动配好 |
+| Grafana | http://localhost:3000 | 账号 `admin` / `admin123`，数据源已自动配好 |
 | Prometheus | http://localhost:9090 | 可查指标、看告警规则是否生效 |
 | Alertmanager | http://localhost:9093 | 看告警分组与静默 |
 | Node Exporter | http://localhost:9100/metrics | 原始指标文本 |
 
-```bash
-make status      # 看状态
-make logs        # 跟踪日志
-make down        # 停止（数据卷保留）
-make clean       # 连数据一起清掉
-make cadvisor    # 额外启用 cAdvisor，监控容器自身资源
-```
+## 看板（Grafana）
 
-## 内置看板
+Grafana 的数据源已通过 `grafana/provisioning/datasources/datasource.yml` 自动配好。
+导入官方 **Node Exporter Full** 看板即可看到 CPU / 内存 / 磁盘 / 网络：
 
-Grafana 通过 provisioning 在容器启动时**自动导入** `grafana/provisioning/dashboards/node-exporter-overview.json`，
-开箱即有 4 张图：CPU / 内存 / 磁盘使用率，以及「磁盘预测 4 小时后是否写满」。
-数据源与看板都是配置文件（配置即代码），跟着 Git 版本管理、一键复现，不靠手工点界面。
+> Grafana → 左侧 `+` → Import → 填 `1860` → 选 Prometheus 数据源 → Load
+
+（进阶：把自定义看板 JSON 放到 `grafana/provisioning/dashboards/` 并补一个 dashboards provider，
+即可在容器启动时自动导入；参考 `grafana/provisioning/datasources/datasource.yml` 的写法。）
 
 ## 预置的告警规则
 
@@ -87,30 +87,46 @@ for: 5m
 磁盘是有限的。监控数据的价值随时间快速衰减，排查问题通常看最近几天。
 长期趋势应另做降采样聚合（如 Thanos 或 recording rules）。
 
+## 加 cAdvisor 监控容器自身
+
+想监控「容器自身」的资源占用，在 `docker-compose.yml` 末尾追加以下服务，
+并在 `prometheus/prometheus.yml` 取消 `cadvisor` job 的注释即可：
+
+```yaml
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8080:8080"
+```
+
 ## 目录结构
 
 ```
 docker-monitoring-stack/
-├── Makefile                                    # 快捷命令：up/down/logs/status/cadvisor
 ├── docker-compose.yml                          # 四个服务编排
-├── docker-compose.cadvisor.yml                 # 可选叠加：cAdvisor
 ├── prometheus/
 │   ├── prometheus.yml                          # 拉取目标配置（含 cadvisor 注释段）
 │   └── alert_rules.yml                         # 告警规则
 ├── alertmanager/alertmanager.yml               # 分组/抑制/静默
 ├── grafana/provisioning/
-│   ├── datasources/datasource.yml              # 数据源自动配置
-│   └── dashboards/
-│       ├── dashboards.yml                      # 看板自动导入配置
-│       └── node-exporter-overview.json         # 内置概览看板
+│   └── datasources/datasource.yml              # 数据源自动配置
 ├── docs/讲解文档.md
-├── LICENSE
 └── README.md
 ```
 
 ## 后续可做
 
-- [x] 加 cAdvisor：监控容器自身的 CPU / 内存（已通过 `make cadvisor` 支持）
 - [ ] 接入钉钉 / 企业微信 webhook，让告警真正发出去（改 `alertmanager.yml` 的 receiver）
 - [ ] 加黑盒探针（blackbox_exporter）：监控外部 URL 是否可访问
 - [ ] 用 recording rules 预计算常用指标，加速大屏查询
+
+## License
+
+MIT © 沈炜丹 (swdscsc)
