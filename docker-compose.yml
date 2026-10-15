@@ -68,8 +68,6 @@ services:
       - grafana_data:/var/lib/grafana
       # 自动配置数据源，省去手工点界面
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      # 自动导入看板（无需手工 import）
-      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
     ports:
       - "3000:3000"
     depends_on:
