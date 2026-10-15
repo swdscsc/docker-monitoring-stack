@@ -8,47 +8,49 @@
 前面几个项目解决的是「单机、单点」的问题：巡检脚本只能看一台机器的一次快照，
 日志分析只能事后翻。真正的生产环境需要的是**持续采集 + 长期存储 + 主动告警**。
 
-这套栈是云原生监控的事实标准，也是很多公司运维岗 JD 里的明确要求。
+这套栈是云原生监控的事实标准，也是很多公司运维/平台岗 JD 里的明确要求。
+
+## 架构
+
+```mermaid
+flowchart LR
+    HOST[宿主机 / 容器指标] -->|/metrics 文本| NE[node-exporter :9100]
+    NE -->|pull 15s| PROM[Prometheus :9090]
+    PROM -->|命中规则 持续 for| AM[Alertmanager :9093]
+    AM -->|分组/抑制/静默| HOOK[Webhook / 钉钉 / 企微]
+    PROM -->|查询| GRAF[Grafana :3000]
+    GRAF -->|自动配置数据源+看板| USER[浏览器看板]
+```
+
+**关键设计：Prometheus 是「拉」模型（pull），不是「推」。** 被监控端只需暴露一个
+`/metrics` 接口，无需知道 Prometheus 在哪。新增监控目标只需加一条 `targets` 配置。
 
 ## 快速开始
 
 ```bash
-docker compose up -d
+make up          # 等价于 docker compose up -d
 ```
 
 | 服务 | 地址 | 说明 |
 | --- | --- | --- |
-| Grafana | http://localhost:3000 | 账号 `admin` / `admin123`，数据源已自动配好 |
+| Grafana | http://localhost:3000 | 账号 `admin` / `admin123`，数据源与看板已自动配好 |
 | Prometheus | http://localhost:9090 | 可查指标、看告警规则是否生效 |
 | Alertmanager | http://localhost:9093 | 看告警分组与静默 |
 | Node Exporter | http://localhost:9100/metrics | 原始指标文本 |
 
 ```bash
-docker compose ps        # 看状态
-docker compose logs -f prometheus
-docker compose down      # 停止（数据卷保留）
-docker compose down -v   # 连数据一起清掉
+make status      # 看状态
+make logs        # 跟踪日志
+make down        # 停止（数据卷保留）
+make clean       # 连数据一起清掉
+make cadvisor    # 额外启用 cAdvisor，监控容器自身资源
 ```
 
-## 架构与数据流向
+## 内置看板
 
-```
-服务器指标源
-    │
-    ├─ node-exporter (:9100)    采集 CPU/内存/磁盘/网络，暴露成 HTTP 文本指标
-    │
-    ▼
-Prometheus (:9090)    ← 主动「拉」(scrape)，15s 一次，存 15 天时序数据
-    │                    按 alert_rules.yml 判定，命中且持续 for 时长 → 发告警
-    ▼
-Alertmanager (:9093)  ← 分组/抑制/静默，避免告警轰炸，再发给 webhook/钉钉/企业微信
-    │
-Grafana (:3000)       ← 直接查 Prometheus，画看板（不经过 Alertmanager）
-```
-
-**关键设计：Prometheus 是「拉」模型（pull），不是「推」。**
-被监控端只需要暴露一个 `/metrics` 接口，不需要知道 Prometheus 在哪。
-这让新增监控目标变得非常简单（加一条 `targets` 配置即可），也便于服务发现。
+Grafana 通过 provisioning 在容器启动时**自动导入** `grafana/provisioning/dashboards/node-exporter-overview.json`，
+开箱即有 4 张图：CPU / 内存 / 磁盘使用率，以及「磁盘预测 4 小时后是否写满」。
+数据源与看板都是配置文件（配置即代码），跟着 Git 版本管理、一键复现，不靠手工点界面。
 
 ## 预置的告警规则
 
@@ -61,9 +63,8 @@ Grafana (:3000)       ← 直接查 Prometheus，画看板（不经过 Alertmana
 | `NodeDown` | `up == 0`，目标失联 | 1m | critical |
 | `HighLoadAverage` | 5 分钟负载 > CPU 核数 × 2 | 10m | warning |
 
-**`DiskWillFillIn4Hours` 是这套规则里最有价值的一条**：
-其他规则都是「已经出问题了才报」，它是**在问题发生前预警**——
-按当前写入速度推算，4 小时后磁盘会满，现在就告诉你。这正是运维该做的事。
+**`DiskWillFillIn4Hours` 是这套规则里最有价值的一条**：其他规则都是「已经出问题了才报」，
+它是**在问题发生前预警**——按当前写入速度推算，4 小时后磁盘会满，现在就告诉你。
 
 ## 设计取舍
 
@@ -71,43 +72,45 @@ Grafana (:3000)       ← 直接查 Prometheus，画看板（不经过 Alertmana
 ```yaml
 for: 5m
 ```
-表示条件**连续满足 5 分钟**才真正触发告警。
-没有 `for`，CPU 跑个定时任务瞬间冲到 90% 就会告警，然后 1 秒后恢复——
-这种抖动会造成告警疲劳，最后真出事时没人看。`for` 是抗抖动的关键。
+表示条件**连续满足 5 分钟**才真正触发告警。没有 `for`，CPU 跑个定时任务瞬间冲到 90% 就会告警，
+然后 1 秒后恢复——这种抖动会造成告警疲劳，最后真出事时没人看。`for` 是抗抖动的关键。
 
 **② Alertmanager 为什么要分组和抑制？**
 - **分组**（`group_by`）：100 台机器的磁盘告警合并成 1 条消息，而不是 100 条
 - **抑制**（`inhibit_rules`）：一台机器宕机时，抑制这台机器上的其他告警——
   机器都挂了，再报「CPU 高」「磁盘满」是噪音，根本原因只有「宕机」一条
 
-**③ Grafana 数据源为什么用 provisioning 自动配置？**
-配置写成文件挂在容器里，起来就有数据源。好处是**配置即代码**：
-能进 Git 版本管理、能一键复现，不用靠人记着「装完还要手动点 5 步」。
-
-**④ 数据只留 15 天**
+**③ 数据只留 15 天**
 ```yaml
 '--storage.tsdb.retention.time=15d'
 ```
 磁盘是有限的。监控数据的价值随时间快速衰减，排查问题通常看最近几天。
-长期趋势应该另做降采样聚合（比如用 Thanos 或 Prometheus 的 recording rules）。
+长期趋势应另做降采样聚合（如 Thanos 或 recording rules）。
 
 ## 目录结构
 
 ```
 docker-monitoring-stack/
-├── docker-compose.yml                        # 四个服务编排
+├── Makefile                                    # 快捷命令：up/down/logs/status/cadvisor
+├── docker-compose.yml                          # 四个服务编排
+├── docker-compose.cadvisor.yml                 # 可选叠加：cAdvisor
 ├── prometheus/
-│   ├── prometheus.yml                        # 拉取目标配置
-│   └── alert_rules.yml                       # 告警规则
-├── alertmanager/alertmanager.yml             # 分组/抑制/静默
-├── grafana/provisioning/datasources/         # 数据源自动配置
+│   ├── prometheus.yml                          # 拉取目标配置（含 cadvisor 注释段）
+│   └── alert_rules.yml                         # 告警规则
+├── alertmanager/alertmanager.yml               # 分组/抑制/静默
+├── grafana/provisioning/
+│   ├── datasources/datasource.yml              # 数据源自动配置
+│   └── dashboards/
+│       ├── dashboards.yml                      # 看板自动导入配置
+│       └── node-exporter-overview.json         # 内置概览看板
 ├── docs/讲解文档.md
+├── LICENSE
 └── README.md
 ```
 
 ## 后续可做
 
-- [ ] 加 cAdvisor：监控容器自身的 CPU / 内存
+- [x] 加 cAdvisor：监控容器自身的 CPU / 内存（已通过 `make cadvisor` 支持）
+- [ ] 接入钉钉 / 企业微信 webhook，让告警真正发出去（改 `alertmanager.yml` 的 receiver）
 - [ ] 加黑盒探针（blackbox_exporter）：监控外部 URL 是否可访问
-- [ ] 接入钉钉 / 企业微信 webhook，让告警真正发出去
 - [ ] 用 recording rules 预计算常用指标，加速大屏查询
